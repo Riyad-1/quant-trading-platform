@@ -1,0 +1,98 @@
+version: '3.8'
+
+services:
+  # PostgreSQL with TimescaleDB extension for time-series data
+  postgres:
+    image: timescale/timescaledb:latest-pg16
+    container_name: quant_postgres
+    environment:
+      POSTGRES_USER: quantuser
+      POSTGRES_PASSWORD: quantpassword
+      POSTGRES_DB: quantdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U quantuser -d quantdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Redis for caching and Celery broker
+  redis:
+    image: redis:7-alpine
+    container_name: quant_redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # FastAPI Backend
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: quant_api
+    command: uvicorn apps.api.src.main:app --host 0.0.0.0 --port 8000 --reload
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://quantuser:quantpassword@postgres:5432/quantdb
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./services:/app/services
+      - ./database:/app/database
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Celery Worker for background tasks
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: quant_worker
+    command: celery -A workers.celery_app worker --loglevel=info
+    environment:
+      - DATABASE_URL=postgresql://quantuser:quantpassword@postgres:5432/quantdb
+      - REDIS_URL=redis://redis:6379/0
+      - ENVIRONMENT=development
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./services:/app/services
+      - ./workers:/app/workers
+      - ./database:/app/database
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Next.js Frontend
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile
+    container_name: quant_web
+    command: npm run dev
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=http://localhost:8000
+    volumes:
+      - ./apps/web:/app
+      - /app/node_modules
+    depends_on:
+      - api
+
+volumes:
+  postgres_data:
