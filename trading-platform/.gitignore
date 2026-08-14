@@ -1,1 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Environment
 .env
+.env.local
+.env.*.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# Logs
+*.log
+logs/
+
+# Database (local development)
+*.db
+*.sqlite3
+
+# ML models (large files)
+models/*.pkl
+models/*.joblib
+*.h5
+*.pt
+
+# Research outputs
+research/notebooks/*.ipynb
+!research/notebooks/.gitkeep
+
+# Temporary files
+tmp/
+temp/
+*.tmp
