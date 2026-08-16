@@ -10,6 +10,7 @@ pydantic-settings==2.1.0
 polars==0.20.3
 numpy==1.26.3
 pandas==2.1.4
+yfinance==1.6.0
 
 # ML libraries
 scikit-learn==1.4.0

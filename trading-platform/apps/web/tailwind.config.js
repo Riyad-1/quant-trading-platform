@@ -6,6 +6,10 @@ module.exports = {
   ],
   theme: {
     extend: {
+      boxShadow: {
+        panel: '0 18px 50px rgba(0, 0, 0, 0.22)',
+        glow: '0 0 32px rgba(34, 211, 238, 0.22)',
+      },
       colors: {
         border: 'hsl(var(--border))',
         input: 'hsl(var(--input))',

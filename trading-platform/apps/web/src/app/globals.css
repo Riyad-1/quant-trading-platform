@@ -3,28 +3,45 @@
 @tailwind utilities;
 
 :root {
-  --background: 0 0% 100%;
-  --foreground: 222.2 84% 4.9%;
-  --card: 0 0% 100%;
-  --card-foreground: 222.2 84% 4.9%;
-  --popover: 0 0% 100%;
-  --popover-foreground: 222.2 84% 4.9%;
-  --primary: 221.2 83.2% 53.3%;
-  --primary-foreground: 210 40% 98%;
-  --secondary: 210 40% 96.1%;
-  --secondary-foreground: 222.2 47.4% 11.2%;
-  --muted: 210 40% 96.1%;
-  --muted-foreground: 215.4 16.3% 46.9%;
-  --accent: 210 40% 96.1%;
-  --accent-foreground: 222.2 47.4% 11.2%;
-  --destructive: 0 84.2% 60.2%;
+  --background: 222 47% 6%;
+  --foreground: 210 40% 96%;
+  --card: 222 39% 9%;
+  --card-foreground: 210 40% 96%;
+  --popover: 222 39% 9%;
+  --popover-foreground: 210 40% 96%;
+  --primary: 188 86% 53%;
+  --primary-foreground: 222 47% 6%;
+  --secondary: 217 28% 15%;
+  --secondary-foreground: 210 40% 96%;
+  --muted: 217 28% 15%;
+  --muted-foreground: 215 18% 55%;
+  --accent: 217 28% 15%;
+  --accent-foreground: 210 40% 96%;
+  --destructive: 350 80% 55%;
   --destructive-foreground: 210 40% 98%;
-  --border: 214.3 31.8% 91.4%;
-  --input: 214.3 31.8% 91.4%;
-  --ring: 221.2 83.2% 53.3%;
+  --border: 217 25% 18%;
+  --input: 217 25% 18%;
+  --ring: 188 86% 53%;
 }
 
+* { border-color: hsl(var(--border)); }
+
+html { color-scheme: dark; }
+
 body {
-  background-color: var(--background);
-  color: var(--foreground);
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 15% -10%, rgba(34, 211, 238, 0.10), transparent 28rem),
+    radial-gradient(circle at 85% 0%, rgba(99, 102, 241, 0.09), transparent 30rem),
+    hsl(var(--background));
+  color: hsl(var(--foreground));
+  font-feature-settings: "ss01", "cv02";
+}
+
+::selection { background: rgba(34, 211, 238, .25); color: white; }
+
+@layer components {
+  .field { @apply h-10 w-full rounded-lg border border-white/10 bg-black/20 px-3 text-sm text-slate-100 outline-none transition placeholder:text-slate-600 focus:border-cyan-400/40 focus:ring-2 focus:ring-cyan-400/10; }
+  .label { @apply mb-2 block text-[11px] font-semibold uppercase tracking-wider text-slate-500; }
+  .section-grid { @apply mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-4; }
 }

@@ -8,5 +8,10 @@ from . import scanner
 from . import regime
 from . import backtest
 from . import news
+from . import ml
+from . import paper
 
-__all__ = ["health", "assets", "portfolio", "strategies", "scanner", "regime", "backtest", "news"]
+__all__ = [
+    "health", "assets", "portfolio", "strategies", "scanner", "regime",
+    "backtest", "news", "ml", "paper"
+]

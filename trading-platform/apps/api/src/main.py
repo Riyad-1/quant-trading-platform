@@ -6,7 +6,7 @@ from contextlib import asynccontextmanager
 
 from .core.config import get_settings
 from .core.database import engine, Base
-from .api.v1 import assets, health, portfolio, strategies, scanner, regime, news
+from .api.v1 import assets, backtest, health, ml, news, paper, portfolio, regime, scanner, strategies
 
 # Import all models to ensure they're registered with Base
 from .db import models  # noqa: F401
@@ -59,6 +59,9 @@ app.include_router(strategies.router, prefix="/api/v1/strategies", tags=["Strate
 app.include_router(scanner.router, prefix="/api/v1", tags=["Scanner"])
 app.include_router(regime.router, prefix="/api/v1", tags=["Market Regime"])
 app.include_router(news.router, prefix="/api/v1", tags=["News & Catalysts"])
+app.include_router(backtest.router, prefix="/api/v1", tags=["Backtesting"])
+app.include_router(ml.router, prefix="/api/v1", tags=["Machine Learning"])
+app.include_router(paper.router, prefix="/api/v1", tags=["Paper Trading"])
 
 
 @app.get("/")
