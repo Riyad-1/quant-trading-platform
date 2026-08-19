@@ -1,16 +1,15 @@
 """Point-in-time daily-bar backtesting with explicit execution assumptions."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import polars as pl
 
+from services.universe.integrity import ResearchDataIntegrity
+
 from .metrics import PerformanceMetrics
 from .strategy import ExecutionModel, IntrabarPolicy, Strategy, StrategyConfig
-
-if TYPE_CHECKING:
-    from services.universe.integrity import ResearchDataIntegrity
 
 
 @dataclass
@@ -79,7 +78,9 @@ class BacktestResult:
     metrics: PerformanceMetrics
     total_signals: int = 0
     avg_score: float = 0.0
-    research_integrity: Optional["ResearchDataIntegrity"] = None
+    research_integrity: ResearchDataIntegrity = field(
+        default_factory=ResearchDataIntegrity.unknown
+    )
 
     @property
     def gross_final_equity(self) -> float:
@@ -146,8 +147,7 @@ class BacktestResult:
             "total_signals": self.total_signals,
             "avg_score": round(self.avg_score, 2),
         }
-        if self.research_integrity is not None:
-            payload["research_integrity"] = self.research_integrity.to_dict()
+        payload["research_integrity"] = self.research_integrity.to_dict()
         return payload
 
 
@@ -163,10 +163,11 @@ class BacktestEngine:
         strategy: Strategy,
         benchmark_data: Optional[pl.DataFrame] = None,
         config: Optional[StrategyConfig] = None,
-        research_integrity: Optional["ResearchDataIntegrity"] = None,
+        research_integrity: Optional[ResearchDataIntegrity] = None,
     ) -> BacktestResult:
         """Run a point-in-time backtest using the configured execution model."""
         config = config or strategy.config
+        result_integrity = research_integrity or ResearchDataIntegrity.unknown()
         self._validate_input(data)
         data = data.sort(["ticker", "timestamp"])
 
@@ -349,7 +350,7 @@ class BacktestEngine:
             metrics=metrics,
             total_signals=len(buy_signals),
             avg_score=avg_score,
-            research_integrity=research_integrity,
+            research_integrity=result_integrity,
         )
 
     @staticmethod

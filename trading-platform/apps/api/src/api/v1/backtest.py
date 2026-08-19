@@ -135,6 +135,8 @@ def _run_spy_trend(
         YFinanceMarketDataProvider.capabilities,
         "yfinance-direct",
         "SPY_CURRENT_SYMBOL",
+        requested_start=start_date,
+        requested_end=end_date,
         uses_current_constituents=True,
     )
 

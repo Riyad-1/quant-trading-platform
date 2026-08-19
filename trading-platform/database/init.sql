@@ -68,6 +68,45 @@ CREATE TABLE universe_definitions (
     updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 );
 
+-- Explicit validation evidence for an actual historical universe dataset.
+-- No rows are seeded: provider capability or membership row count is not proof.
+CREATE TABLE historical_universe_coverage (
+    id SERIAL PRIMARY KEY,
+    universe_id INTEGER NOT NULL REFERENCES universe_definitions(id) ON DELETE CASCADE,
+    provider_name VARCHAR(100) NOT NULL,
+    coverage_start DATE,
+    coverage_end DATE,
+    historical_population_verified BOOLEAN NOT NULL DEFAULT false,
+    historical_membership_established BOOLEAN NOT NULL DEFAULT false,
+    membership_availability_established BOOLEAN NOT NULL DEFAULT false,
+    symbol_history_established BOOLEAN NOT NULL DEFAULT false,
+    listing_history_established BOOLEAN NOT NULL DEFAULT false,
+    delisted_coverage_established BOOLEAN NOT NULL DEFAULT false,
+    provenance_known BOOLEAN NOT NULL DEFAULT false,
+    source VARCHAR(100) NOT NULL,
+    evidence_metadata JSONB,
+    warnings JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_historical_universe_coverage_evidence UNIQUE (
+        universe_id,
+        provider_name,
+        source,
+        coverage_start,
+        coverage_end
+    ),
+    CONSTRAINT ck_historical_universe_coverage_range CHECK (
+        coverage_end IS NULL OR coverage_start IS NULL OR coverage_end >= coverage_start
+    )
+);
+
+CREATE INDEX ix_historical_universe_coverage_lookup
+    ON historical_universe_coverage (universe_id, provider_name);
+CREATE INDEX ix_historical_universe_coverage_universe_id
+    ON historical_universe_coverage (universe_id);
+CREATE INDEX ix_historical_universe_coverage_provider_name
+    ON historical_universe_coverage (provider_name);
+
 CREATE TABLE universe_memberships (
     id SERIAL PRIMARY KEY,
     universe_id INTEGER NOT NULL REFERENCES universe_definitions(id) ON DELETE CASCADE,

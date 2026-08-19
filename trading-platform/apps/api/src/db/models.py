@@ -190,6 +190,67 @@ class UniverseDefinition(Base):
         back_populates="universe",
         cascade="all, delete-orphan",
     )
+    coverage_records = relationship(
+        "HistoricalUniverseCoverageRecord",
+        back_populates="universe",
+        cascade="all, delete-orphan",
+    )
+
+
+class HistoricalUniverseCoverageRecord(Base):
+    """Explicit evidence about one provider/dataset's historical coverage."""
+
+    __tablename__ = "historical_universe_coverage"
+    __table_args__ = (
+        UniqueConstraint(
+            "universe_id",
+            "provider_name",
+            "source",
+            "coverage_start",
+            "coverage_end",
+            name="uq_historical_universe_coverage_evidence",
+        ),
+        CheckConstraint(
+            "coverage_end IS NULL OR coverage_start IS NULL "
+            "OR coverage_end >= coverage_start",
+            name="ck_historical_universe_coverage_range",
+        ),
+        Index(
+            "ix_historical_universe_coverage_lookup",
+            "universe_id",
+            "provider_name",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    universe_id = Column(
+        Integer,
+        ForeignKey("universe_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    provider_name = Column(String(100), nullable=False, index=True)
+    coverage_start = Column(Date)
+    coverage_end = Column(Date)
+    historical_population_verified = Column(Boolean, nullable=False, default=False)
+    historical_membership_established = Column(Boolean, nullable=False, default=False)
+    membership_availability_established = Column(Boolean, nullable=False, default=False)
+    symbol_history_established = Column(Boolean, nullable=False, default=False)
+    listing_history_established = Column(Boolean, nullable=False, default=False)
+    delisted_coverage_established = Column(Boolean, nullable=False, default=False)
+    provenance_known = Column(Boolean, nullable=False, default=False)
+    source = Column(String(100), nullable=False)
+    evidence_metadata = Column(JSONB)
+    warnings = Column(JSONB)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        TIMESTAMPTZ,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    universe = relationship("UniverseDefinition", back_populates="coverage_records")
 
 
 class UniverseMembership(Base):

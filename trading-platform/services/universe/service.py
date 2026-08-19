@@ -7,13 +7,14 @@ Missing history fails closed; current constituents are never substituted.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from typing import Any, Optional, Type
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from apps.api.src.db.models import (
+    HistoricalUniverseCoverageRecord,
     Security,
     SecurityStatusHistory,
     SecuritySymbol,
@@ -23,7 +24,11 @@ from apps.api.src.db.models import (
 from services.data.capabilities import ProviderCapabilities
 
 from .integrity import ResearchDataIntegrity, evaluate_research_integrity
-from .models import HistoricalUniverseMember, TRADABLE_STATUSES
+from .models import (
+    HistoricalUniverseCoverage,
+    HistoricalUniverseMember,
+    TRADABLE_STATUSES,
+)
 
 
 class HistoricalDataConflictError(ValueError):
@@ -159,6 +164,93 @@ class HistoricalUniverseService:
         self.session.flush()
         return membership
 
+    def add_coverage(
+        self,
+        coverage: HistoricalUniverseCoverage,
+        *,
+        evidence_metadata: Any = None,
+    ) -> HistoricalUniverseCoverageRecord:
+        """Persist explicit coverage evidence without deriving it from row counts."""
+        universe = self.session.query(UniverseDefinition).filter(
+            UniverseDefinition.code == coverage.universe_code
+        ).one_or_none()
+        if universe is None:
+            raise ValueError(f"unknown universe code: {coverage.universe_code}")
+        if not coverage.provider_name:
+            raise ValueError("coverage provider_name is required")
+        if not coverage.source:
+            raise ValueError("coverage source is required")
+        if (
+            coverage.coverage_start is not None
+            and coverage.coverage_end is not None
+            and coverage.coverage_end < coverage.coverage_start
+        ):
+            raise ValueError("coverage_end must be on or after coverage_start")
+
+        record = HistoricalUniverseCoverageRecord(
+            universe_id=universe.id,
+            provider_name=coverage.provider_name,
+            coverage_start=coverage.coverage_start,
+            coverage_end=coverage.coverage_end,
+            historical_population_verified=coverage.historical_population_verified,
+            historical_membership_established=coverage.historical_membership_established,
+            membership_availability_established=(
+                coverage.membership_availability_established
+            ),
+            symbol_history_established=coverage.symbol_history_established,
+            listing_history_established=coverage.listing_history_established,
+            delisted_coverage_established=coverage.delisted_coverage_established,
+            provenance_known=coverage.provenance_known,
+            source=coverage.source,
+            evidence_metadata=evidence_metadata,
+            warnings=list(coverage.warnings),
+        )
+        self.session.add(record)
+        self.session.flush()
+        return record
+
+    def get_coverage(
+        self,
+        universe_code: str,
+        provider_name: str,
+    ) -> Optional[HistoricalUniverseCoverage]:
+        records = (
+            self.session.query(HistoricalUniverseCoverageRecord)
+            .join(
+                UniverseDefinition,
+                HistoricalUniverseCoverageRecord.universe_id == UniverseDefinition.id,
+            )
+            .filter(
+                UniverseDefinition.code == universe_code,
+                HistoricalUniverseCoverageRecord.provider_name == provider_name,
+            )
+            .all()
+        )
+        if len(records) > 1:
+            raise HistoricalDataConflictError(
+                f"multiple coverage records exist for {provider_name}/{universe_code}"
+            )
+        if not records:
+            return None
+        record = records[0]
+        return HistoricalUniverseCoverage(
+            universe_code=universe_code,
+            provider_name=record.provider_name,
+            coverage_start=record.coverage_start,
+            coverage_end=record.coverage_end,
+            historical_population_verified=record.historical_population_verified,
+            historical_membership_established=record.historical_membership_established,
+            membership_availability_established=(
+                record.membership_availability_established
+            ),
+            symbol_history_established=record.symbol_history_established,
+            listing_history_established=record.listing_history_established,
+            delisted_coverage_established=record.delisted_coverage_established,
+            provenance_known=record.provenance_known,
+            source=record.source,
+            warnings=tuple(record.warnings or ()),
+        )
+
     def get_symbol_as_of(
         self,
         security_id: int,
@@ -213,6 +305,8 @@ class HistoricalUniverseService:
         self,
         universe_code: str,
         as_of_date: date,
+        *,
+        known_at: Optional[datetime] = None,
     ) -> list[HistoricalUniverseMember]:
         universe = self.session.query(UniverseDefinition).filter(
             UniverseDefinition.code == universe_code
@@ -220,10 +314,16 @@ class HistoricalUniverseService:
         if universe is None:
             return []
 
-        memberships = self.session.query(UniverseMembership).filter(
+        membership_query = self.session.query(UniverseMembership).filter(
             UniverseMembership.universe_id == universe.id,
             self._contains(UniverseMembership, as_of_date),
-        ).all()
+        )
+        if known_at is not None:
+            membership_query = membership_query.filter(
+                UniverseMembership.available_at.is_not(None),
+                UniverseMembership.available_at <= known_at,
+            )
+        memberships = membership_query.all()
 
         result: list[HistoricalUniverseMember] = []
         seen_security_ids: set[int] = set()
@@ -251,15 +351,32 @@ class HistoricalUniverseService:
                     membership_valid_from=membership.valid_from,
                     membership_valid_to=membership.valid_to,
                     membership_source=membership.source,
+                    membership_available_at=membership.available_at,
                 )
             )
         return sorted(result, key=lambda member: (member.ticker, member.security_id))
 
-    @staticmethod
+    def get_point_in_time_universe(
+        self,
+        universe_code: str,
+        as_of_date: date,
+        known_at: datetime,
+    ) -> list[HistoricalUniverseMember]:
+        """Return effective members whose membership fact was known by known_at."""
+        return self.get_universe_as_of(
+            universe_code,
+            as_of_date,
+            known_at=known_at,
+        )
+
     def get_integrity_status(
+        self,
         provider: Any,
         universe_code: Optional[str],
         *,
+        coverage: Optional[HistoricalUniverseCoverage] = None,
+        requested_start: Optional[date] = None,
+        requested_end: Optional[date] = None,
         uses_current_constituents: bool = False,
     ) -> ResearchDataIntegrity:
         capabilities = getattr(provider, "capabilities", ProviderCapabilities())
@@ -270,9 +387,15 @@ class HistoricalUniverseService:
             "source_name",
             provider.__class__.__name__,
         )
+        provider_name = str(provider_name)
+        if coverage is None and universe_code is not None:
+            coverage = self.get_coverage(universe_code, provider_name)
         return evaluate_research_integrity(
             capabilities,
-            str(provider_name),
+            provider_name,
             universe_code,
+            coverage=coverage,
+            requested_start=requested_start,
+            requested_end=requested_end,
             uses_current_constituents=uses_current_constituents,
         )

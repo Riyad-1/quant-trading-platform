@@ -9,6 +9,7 @@ from sqlalchemy.orm import sessionmaker
 
 from apps.api.src.db.models import (
     CorporateAction,
+    HistoricalUniverseCoverageRecord,
     Security,
     SecurityStatusHistory,
     SecuritySymbol,
@@ -25,6 +26,7 @@ from services.universe.integrity import (
     SurvivorshipIntegrity,
     evaluate_research_integrity,
 )
+from services.universe.models import HistoricalUniverseCoverage
 from services.universe.service import (
     HistoricalDataConflictError,
     HistoricalUniverseService,
@@ -36,6 +38,7 @@ STAGE_C_TABLES = [
     SecuritySymbol.__table__,
     SecurityStatusHistory.__table__,
     UniverseDefinition.__table__,
+    HistoricalUniverseCoverageRecord.__table__,
     UniverseMembership.__table__,
     CorporateAction.__table__,
 ]
@@ -98,6 +101,25 @@ def complete_capabilities(**overrides) -> ProviderCapabilities:
     }
     values.update(overrides)
     return ProviderCapabilities(**values)
+
+
+def complete_coverage(**overrides) -> HistoricalUniverseCoverage:
+    values = {
+        "universe_code": "SYNTHETIC_US",
+        "provider_name": "synthetic",
+        "coverage_start": date(2010, 1, 1),
+        "coverage_end": date(2024, 12, 31),
+        "historical_population_verified": True,
+        "historical_membership_established": True,
+        "membership_availability_established": True,
+        "symbol_history_established": True,
+        "listing_history_established": True,
+        "delisted_coverage_established": True,
+        "provenance_known": True,
+        "source": "synthetic_test_fixture",
+    }
+    values.update(overrides)
+    return HistoricalUniverseCoverage(**values)
 
 
 def test_historical_membership_returns_only_valid_member(universe_fixture):
@@ -179,6 +201,76 @@ def test_half_open_interval_includes_start_and_excludes_end(universe_fixture):
     assert [member.security_id for member in transition] == [bbb.id]
 
 
+def availability_membership_fixture(session, available_at):
+    service = HistoricalUniverseService(session)
+    universe = UniverseDefinition(
+        code="AVAILABILITY_TEST",
+        name="Membership availability test",
+        source="synthetic_test_fixture",
+    )
+    security = Security(display_name="Synthetic AAA", current_status="ACTIVE")
+    session.add_all([universe, security])
+    session.flush()
+    service.add_symbol(security.id, "AAA", date(2010, 1, 1), None, "synthetic")
+    service.add_status(security.id, "ACTIVE", date(2010, 1, 1), None, "synthetic")
+    service.add_membership(
+        universe.id,
+        security.id,
+        date(2020, 1, 1),
+        None,
+        "synthetic",
+        available_at=available_at,
+    )
+    return service
+
+
+def test_effective_membership_not_yet_known_is_excluded_from_pit_query(session):
+    service = availability_membership_fixture(
+        session,
+        datetime(2020, 1, 5),
+    )
+
+    reference = service.get_universe_as_of("AVAILABILITY_TEST", date(2020, 1, 2))
+    point_in_time = service.get_point_in_time_universe(
+        "AVAILABILITY_TEST",
+        date(2020, 1, 2),
+        datetime(2020, 1, 2),
+    )
+
+    assert [member.ticker for member in reference] == ["AAA"]
+    assert point_in_time == []
+
+
+def test_membership_becomes_usable_when_availability_is_reached(session):
+    service = availability_membership_fixture(
+        session,
+        datetime(2020, 1, 5),
+    )
+
+    point_in_time = service.get_point_in_time_universe(
+        "AVAILABILITY_TEST",
+        date(2020, 1, 2),
+        datetime(2020, 1, 5),
+    )
+
+    assert [member.ticker for member in point_in_time] == ["AAA"]
+    assert point_in_time[0].membership_available_at == datetime(2020, 1, 5)
+
+
+def test_null_membership_availability_is_reference_only(session):
+    service = availability_membership_fixture(session, None)
+
+    reference = service.get_universe_as_of("AVAILABILITY_TEST", date(2020, 1, 2))
+    point_in_time = service.get_point_in_time_universe(
+        "AVAILABILITY_TEST",
+        date(2020, 1, 2),
+        datetime(2020, 1, 10),
+    )
+
+    assert [member.ticker for member in reference] == ["AAA"]
+    assert point_in_time == []
+
+
 def test_provider_without_historical_membership_is_not_point_in_time():
     integrity = evaluate_research_integrity(
         complete_capabilities(
@@ -186,10 +278,75 @@ def test_provider_without_historical_membership_is_not_point_in_time():
         ),
         "synthetic",
         "SYNTHETIC_US",
+        coverage=complete_coverage(),
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
     )
 
     assert integrity.survivorship_status is not SurvivorshipIntegrity.POINT_IN_TIME
     assert integrity.can_qualify_strategy is False
+
+
+def test_capability_alone_cannot_qualify_without_dataset_evidence():
+    integrity = evaluate_research_integrity(
+        complete_capabilities(),
+        "synthetic",
+        "SYNTHETIC_US",
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
+    )
+
+    assert integrity.survivorship_status is not SurvivorshipIntegrity.POINT_IN_TIME
+    assert integrity.can_qualify_strategy is False
+    assert "Historical universe coverage evidence was not supplied." in integrity.warnings
+
+
+def test_verified_synthetic_universe_can_qualify():
+    integrity = evaluate_research_integrity(
+        complete_capabilities(),
+        "synthetic",
+        "SYNTHETIC_US",
+        coverage=complete_coverage(),
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
+    )
+
+    assert integrity.survivorship_status is SurvivorshipIntegrity.POINT_IN_TIME
+    assert integrity.can_qualify_strategy is True
+
+
+def test_coverage_period_too_short_cannot_qualify():
+    integrity = evaluate_research_integrity(
+        complete_capabilities(),
+        "synthetic",
+        "SYNTHETIC_US",
+        coverage=complete_coverage(coverage_start=date(2020, 1, 1)),
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
+    )
+
+    assert integrity.survivorship_status is SurvivorshipIntegrity.PARTIAL_HISTORY
+    assert integrity.can_qualify_strategy is False
+    assert "Dataset coverage does not span the requested research period." in integrity.warnings
+
+
+def test_unverified_empty_dataset_cannot_qualify():
+    coverage = complete_coverage(
+        historical_population_verified=False,
+        historical_membership_established=False,
+    )
+    integrity = evaluate_research_integrity(
+        complete_capabilities(),
+        "synthetic",
+        "SYNTHETIC_US",
+        coverage=coverage,
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
+    )
+
+    assert integrity.survivorship_status is SurvivorshipIntegrity.PARTIAL_HISTORY
+    assert integrity.can_qualify_strategy is False
+    assert integrity.historical_universe_available is False
 
 
 def test_provider_without_delisted_coverage_is_partial_not_qualified():
@@ -197,6 +354,9 @@ def test_provider_without_delisted_coverage_is_partial_not_qualified():
         complete_capabilities(delisted_securities=CapabilitySupport.UNSUPPORTED),
         "synthetic",
         "SYNTHETIC_US",
+        coverage=complete_coverage(),
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
     )
 
     assert integrity.survivorship_status is SurvivorshipIntegrity.PARTIAL_HISTORY
@@ -209,6 +369,9 @@ def test_unknown_capability_is_never_interpreted_as_supported():
         complete_capabilities(symbol_history=CapabilitySupport.UNKNOWN),
         "synthetic",
         "SYNTHETIC_US",
+        coverage=complete_coverage(),
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
     )
 
     assert integrity.survivorship_status is SurvivorshipIntegrity.PARTIAL_HISTORY
@@ -254,13 +417,8 @@ class NoSignalStrategy(Strategy):
         )
 
 
-def test_backtest_result_exposes_supplied_research_integrity():
-    integrity = evaluate_research_integrity(
-        complete_capabilities(),
-        "synthetic",
-        "SYNTHETIC_US",
-    )
-    data = pl.DataFrame(
+def no_signal_price_data() -> pl.DataFrame:
+    return pl.DataFrame(
         {
             "timestamp": [date(2020, 1, 2), date(2020, 1, 3)],
             "ticker": ["AAA", "AAA"],
@@ -272,12 +430,34 @@ def test_backtest_result_exposes_supplied_research_integrity():
         }
     )
 
-    payload = BacktestEngine().run(
-        data,
+
+def test_backtest_without_integrity_metadata_fails_closed():
+    result = BacktestEngine().run(no_signal_price_data(), NoSignalStrategy())
+    payload = result.to_dict()
+
+    assert result.research_integrity is not None
+    assert payload["research_integrity"]["survivorship_status"] == "UNKNOWN"
+    assert payload["research_integrity"]["can_qualify_strategy"] is False
+    assert "RESEARCH ONLY." in payload["research_integrity"]["warnings"]
+
+
+def test_backtest_result_exposes_supplied_research_integrity():
+    integrity = evaluate_research_integrity(
+        complete_capabilities(),
+        "synthetic",
+        "SYNTHETIC_US",
+        coverage=complete_coverage(),
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
+    )
+    result = BacktestEngine().run(
+        no_signal_price_data(),
         NoSignalStrategy(),
         research_integrity=integrity,
-    ).to_dict()
+    )
+    payload = result.to_dict()
 
+    assert result.research_integrity is integrity
     assert payload["research_integrity"]["universe_code"] == "SYNTHETIC_US"
     assert payload["research_integrity"]["survivorship_status"] == "POINT_IN_TIME"
     assert payload["research_integrity"]["can_qualify_strategy"] is True
@@ -339,16 +519,29 @@ def test_missing_status_history_fails_tradability_closed(session):
     assert service.is_security_tradable_as_of(security.id, date(2020, 1, 1)) is False
 
 
-def test_mock_provider_capabilities_can_be_explicitly_configured():
+def test_mock_provider_capabilities_can_be_explicitly_configured(session):
     provider = MockMarketDataProvider(
         num_stocks=1,
         seed=1,
         capabilities=complete_capabilities(),
     )
+    universe = UniverseDefinition(
+        code="SYNTHETIC_US",
+        name="Synthetic coverage universe",
+        source="synthetic_test_fixture",
+    )
+    session.add(universe)
+    session.flush()
+    service = HistoricalUniverseService(session)
+    service.add_coverage(
+        complete_coverage(provider_name="MockMarketDataProvider")
+    )
 
-    integrity = HistoricalUniverseService.get_integrity_status(
+    integrity = service.get_integrity_status(
         provider,
         "SYNTHETIC_US",
+        requested_start=date(2015, 1, 1),
+        requested_end=date(2024, 12, 31),
     )
 
     assert integrity.survivorship_status is SurvivorshipIntegrity.POINT_IN_TIME

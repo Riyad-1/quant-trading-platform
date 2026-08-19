@@ -61,8 +61,14 @@ A full-stack quantitative stock trading research platform with AI assistance. Th
 
 3. **Start all services**
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
+
+   PostgreSQL runs `database/init.sql` only when its data volume is first
+   created. The one-shot `migrate` service then runs `alembic upgrade head`.
+   API and worker containers start only after that migration succeeds. Alembic
+   is authoritative for versioned upgrades; the API never creates tables at
+   startup.
 
 4. **Verify services are running**
    ```bash
@@ -88,7 +94,13 @@ docker-compose logs -f web
 
 #### Run database migrations
 ```bash
-docker-compose exec api alembic upgrade head
+docker compose run --rm migrate
+```
+
+Inspect migration state:
+```bash
+docker compose run --rm migrate python -m alembic -c /app/alembic.ini current
+docker compose run --rm migrate python -m alembic -c /app/alembic.ini heads
 ```
 
 #### Run tests

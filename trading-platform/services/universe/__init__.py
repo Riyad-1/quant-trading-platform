@@ -5,11 +5,16 @@ from .integrity import (
     SurvivorshipIntegrity,
     evaluate_research_integrity,
 )
-from .models import HistoricalUniverseMember, SecurityLifecycleStatus
+from .models import (
+    HistoricalUniverseCoverage,
+    HistoricalUniverseMember,
+    SecurityLifecycleStatus,
+)
 from .service import HistoricalDataConflictError, HistoricalUniverseService
 
 __all__ = [
     "HistoricalDataConflictError",
+    "HistoricalUniverseCoverage",
     "HistoricalUniverseMember",
     "HistoricalUniverseService",
     "ResearchDataIntegrity",

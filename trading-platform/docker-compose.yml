@@ -41,6 +41,25 @@ services:
     ports:
       - "6900:6900"
 
+  # Exactly one service owns schema upgrades; API and worker wait for success.
+  migrate:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: quant_migrate
+    command: python -m alembic -c /app/alembic.ini upgrade head
+    environment:
+      - DATABASE_URL=postgresql://quantuser:quantpassword@postgres:5432/quantdb
+    volumes:
+      - ./apps/api:/app/apps/api
+      - ./services:/app/services
+      - ./database:/app/database
+      - ./alembic.ini:/app/alembic.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   # FastAPI Backend
   api:
     build:
@@ -62,8 +81,8 @@ services:
       - ./services:/app/services
       - ./database:/app/database
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       openbb:
@@ -86,8 +105,8 @@ services:
       - ./workers:/app/workers
       - ./database:/app/database
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
 

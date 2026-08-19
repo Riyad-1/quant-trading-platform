@@ -1,41 +1,20 @@
 """FastAPI application main entry point."""
 
-from fastapi import FastAPI, Depends
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 
 from .core.config import get_settings
-from .core.database import engine, Base
 from .api.v1 import assets, backtest, health, ml, news, paper, portfolio, regime, scanner, strategies
-
-# Import all models to ensure they're registered with Base
-from .db import models  # noqa: F401
-from .db.models_news import NewsSource, NewsArticle, TickerNewsLink, NewsEvent, CatalystScore  # noqa: F401
 
 
 settings = get_settings()
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup and shutdown events."""
-    # Startup: Create tables if they don't exist
-    print("Starting up Quant Trading Platform API...")
-    Base.metadata.create_all(bind=engine)
-    print("Database tables created/verified")
-
-    yield
-
-    # Shutdown
-    print("Shutting down Quant Trading Platform API...")
 
 
 # Create FastAPI application
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
-    description="AI-Powered Quantitative Stock Trading Research Platform",
-    lifespan=lifespan
+    description="AI-Powered Quantitative Stock Trading Research Platform"
 )
 
 # Configure CORS for frontend
