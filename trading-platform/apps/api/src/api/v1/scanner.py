@@ -77,6 +77,8 @@ class ScannerProviderResponse(BaseModel):
     last_error: Optional[str] = None
     default_universe_size: int
     live_market_data: bool
+    capabilities: Dict[str, str]
+    research_integrity: Dict[str, Any]
 
 
 # Initialize scanner service (in production, this would come from dependency injection)

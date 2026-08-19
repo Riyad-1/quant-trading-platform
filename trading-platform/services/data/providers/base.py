@@ -4,9 +4,13 @@ from abc import ABC, abstractmethod
 from typing import Optional, List, Dict, Any
 from datetime import datetime, date
 
+from services.data.capabilities import ProviderCapabilities
+
 
 class MarketDataProvider(ABC):
     """Abstract base class for market data providers."""
+
+    capabilities = ProviderCapabilities()
 
     @abstractmethod
     async def get_daily_prices(

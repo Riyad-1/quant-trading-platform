@@ -9,6 +9,9 @@ import yfinance as yf
 from fastapi import APIRouter, HTTPException, Query
 from starlette.concurrency import run_in_threadpool
 
+from services.data.providers.yfinance_provider import YFinanceMarketDataProvider
+from services.universe.integrity import evaluate_research_integrity
+
 
 router = APIRouter(prefix="/backtest", tags=["backtesting"])
 
@@ -128,6 +131,12 @@ def _run_spy_trend(
 
     strategy_metrics = _metrics(strategy_equity, initial_capital)
     benchmark_metrics = _metrics(benchmark_equity, initial_capital)
+    research_integrity = evaluate_research_integrity(
+        YFinanceMarketDataProvider.capabilities,
+        "yfinance-direct",
+        "SPY_CURRENT_SYMBOL",
+        uses_current_constituents=True,
+    )
 
     return {
         "ticker": "SPY",
@@ -146,11 +155,13 @@ def _run_spy_trend(
         "exits": exits,
         "market_exposure": exposure_days / len(frame),
         "equity_curve": curve,
+        "research_integrity": research_integrity.to_dict(),
         "limitations": [
             "Fractional shares are used",
             "Cash earns no interest",
             "Taxes and market impact are excluded",
             "Historical results are not investment advice",
+            *research_integrity.warnings,
         ],
     }
 

@@ -6,16 +6,23 @@ import random
 import polars as pl
 
 from .base import MarketDataProvider
+from services.data.capabilities import ProviderCapabilities
 
 
 class MockMarketDataProvider(MarketDataProvider):
     """Mock implementation of MarketDataProvider for testing."""
 
-    def __init__(self, num_stocks: int = 50, seed: Optional[int] = None):
+    def __init__(
+        self,
+        num_stocks: int = 50,
+        seed: Optional[int] = None,
+        capabilities: Optional[ProviderCapabilities] = None,
+    ):
         if seed is not None:
             random.seed(seed)
 
         self.num_stocks = num_stocks
+        self.capabilities = capabilities or ProviderCapabilities.requested_symbol_prices_only()
         self._stocks = self._generate_stock_universe()
 
     def _generate_stock_universe(self) -> List[Dict[str, Any]]:

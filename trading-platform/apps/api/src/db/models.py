@@ -1,11 +1,10 @@
 """SQLAlchemy models for the database schema."""
 
 from datetime import datetime
-from typing import Optional, List
 from sqlalchemy import (
     Column, Integer, String, Numeric, BigInteger,
     DateTime, Boolean, Text, ForeignKey, Enum as SQLEnum,
-    JSON, UniqueConstraint, create_engine
+    JSON, UniqueConstraint, CheckConstraint, Date, Index
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -39,11 +38,245 @@ class SignalDirection(enum.Enum):
     neutral = "neutral"
 
 
+class Security(Base):
+    """Immutable internal identity for a listed or formerly listed security."""
+
+    __tablename__ = "securities"
+
+    id = Column(Integer, primary_key=True, index=True)
+    security_type = Column(
+        String(50),
+        nullable=False,
+        default="COMMON_STOCK",
+        server_default="COMMON_STOCK",
+    )
+    display_name = Column(String(255))
+    primary_exchange = Column(String(50))
+    currency = Column(String(10))
+    country = Column(String(10))
+    current_status = Column(
+        String(30),
+        nullable=False,
+        default="UNKNOWN",
+        server_default="UNKNOWN",
+        index=True,
+    )
+    figi = Column(String(20), unique=True)
+    composite_figi = Column(String(20), unique=True)
+    isin = Column(String(20), unique=True)
+    cusip = Column(String(20), unique=True)
+    provider_identifiers = Column(JSONB)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        TIMESTAMPTZ,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    symbols = relationship(
+        "SecuritySymbol",
+        back_populates="security",
+        cascade="all, delete-orphan",
+    )
+    status_history = relationship(
+        "SecurityStatusHistory",
+        back_populates="security",
+        cascade="all, delete-orphan",
+    )
+    universe_memberships = relationship(
+        "UniverseMembership",
+        back_populates="security",
+        cascade="all, delete-orphan",
+    )
+    corporate_actions = relationship(
+        "CorporateAction",
+        back_populates="security",
+        cascade="all, delete-orphan",
+    )
+    assets = relationship("Asset", back_populates="security")
+
+
+class SecuritySymbol(Base):
+    """Effective-dated symbol using half-open [valid_from, valid_to) ranges."""
+
+    __tablename__ = "security_symbols"
+    __table_args__ = (
+        UniqueConstraint(
+            "security_id",
+            "ticker",
+            "exchange",
+            "valid_from",
+            name="uq_security_symbol_start",
+        ),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to > valid_from",
+            name="ck_security_symbol_valid_range",
+        ),
+        Index("ix_security_symbols_lookup", "ticker", "valid_from", "valid_to"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    security_id = Column(
+        Integer,
+        ForeignKey("securities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    ticker = Column(String(20), nullable=False, index=True)
+    exchange = Column(String(50))
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date)
+    source = Column(String(100), nullable=False)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+
+    security = relationship("Security", back_populates="symbols")
+
+
+class SecurityStatusHistory(Base):
+    """Effective-dated lifecycle/tradability status for a security."""
+
+    __tablename__ = "security_status_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "security_id",
+            "valid_from",
+            name="uq_security_status_start",
+        ),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to > valid_from",
+            name="ck_security_status_valid_range",
+        ),
+        Index("ix_security_status_lookup", "security_id", "valid_from", "valid_to"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    security_id = Column(
+        Integer,
+        ForeignKey("securities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    status = Column(String(30), nullable=False, index=True)
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date)
+    source = Column(String(100), nullable=False)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+
+    security = relationship("Security", back_populates="status_history")
+
+
+class UniverseDefinition(Base):
+    """Named definition of a research or scanner security universe."""
+
+    __tablename__ = "universe_definitions"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(100), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    description = Column(Text)
+    source = Column(String(100), nullable=False)
+    methodology = Column(JSONB)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        TIMESTAMPTZ,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    memberships = relationship(
+        "UniverseMembership",
+        back_populates="universe",
+        cascade="all, delete-orphan",
+    )
+
+
+class UniverseMembership(Base):
+    """Effective-dated membership using half-open [valid_from, valid_to) ranges."""
+
+    __tablename__ = "universe_memberships"
+    __table_args__ = (
+        UniqueConstraint(
+            "universe_id",
+            "security_id",
+            "valid_from",
+            name="uq_universe_membership_start",
+        ),
+        CheckConstraint(
+            "valid_to IS NULL OR valid_to > valid_from",
+            name="ck_universe_membership_valid_range",
+        ),
+        Index(
+            "ix_universe_membership_lookup",
+            "universe_id",
+            "valid_from",
+            "valid_to",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    universe_id = Column(
+        Integer,
+        ForeignKey("universe_definitions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    security_id = Column(
+        Integer,
+        ForeignKey("securities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    valid_from = Column(Date, nullable=False)
+    valid_to = Column(Date)
+    source = Column(String(100), nullable=False)
+    available_at = Column(TIMESTAMPTZ)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+
+    universe = relationship("UniverseDefinition", back_populates="memberships")
+    security = relationship("Security", back_populates="universe_memberships")
+
+
+class CorporateAction(Base):
+    """Traceable corporate-action event foundation for later processing."""
+
+    __tablename__ = "corporate_actions"
+    __table_args__ = (
+        UniqueConstraint("source", "source_event_id", name="uq_corporate_action_source_event"),
+        Index("ix_corporate_actions_security_date", "security_id", "effective_date"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    security_id = Column(
+        Integer,
+        ForeignKey("securities.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action_type = Column(String(30), nullable=False, index=True)
+    event_date = Column(Date)
+    effective_date = Column(Date, nullable=False, index=True)
+    available_at = Column(TIMESTAMPTZ)
+    source = Column(String(100), nullable=False)
+    source_event_id = Column(String(200))
+    action_metadata = Column(JSONB)
+    created_at = Column(TIMESTAMPTZ, server_default=func.now(), nullable=False)
+
+    security = relationship("Security", back_populates="corporate_actions")
+
+
 class Asset(Base):
     """Stock or ETF asset."""
     __tablename__ = "assets"
 
     id = Column(Integer, primary_key=True, index=True)
+    security_id = Column(
+        Integer,
+        ForeignKey("securities.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     ticker = Column(String(20), unique=True, nullable=False, index=True)
     name = Column(String(255))
     exchange = Column(String(50))
@@ -55,6 +288,7 @@ class Asset(Base):
     updated_at = Column(TIMESTAMPTZ, server_default=func.now(), onupdate=func.now())
 
     # Relationships
+    security = relationship("Security", back_populates="assets")
     prices = relationship("PriceDaily", back_populates="asset", cascade="all, delete-orphan")
     features = relationship("FeatureDaily", back_populates="asset", cascade="all, delete-orphan")
     news_events = relationship("LegacyNewsEvent", back_populates="asset", cascade="all, delete-orphan")

@@ -11,6 +11,7 @@ import polars as pl
 import yfinance as yf
 
 from .base import MarketDataProvider
+from services.data.capabilities import ProviderCapabilities
 
 
 DEFAULT_SCANNER_UNIVERSE = (
@@ -36,6 +37,7 @@ class YFinanceMarketDataProvider(MarketDataProvider):
     """Fetch adjusted market data directly from yfinance."""
 
     source_name = "yfinance-direct"
+    capabilities = ProviderCapabilities.requested_symbol_prices_only()
 
     def __init__(
         self,

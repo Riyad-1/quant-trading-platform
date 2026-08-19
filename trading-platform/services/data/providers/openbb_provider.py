@@ -12,6 +12,7 @@ import polars as pl
 
 from .base import MarketDataProvider
 from .yfinance_provider import YFinanceMarketDataProvider, _empty_price_frame, _normalize_tickers
+from services.data.capabilities import ProviderCapabilities
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,8 @@ PRICE_ADJUSTMENT = "splits_and_dividends"
 
 class OpenBBMarketDataProvider(MarketDataProvider):
     """Consume OpenBB's FastAPI service and fall back to direct Yahoo Finance."""
+
+    capabilities = ProviderCapabilities.requested_symbol_prices_only()
 
     def __init__(
         self,
@@ -51,6 +54,7 @@ class OpenBBMarketDataProvider(MarketDataProvider):
             "last_error": self.last_error,
             "default_universe_size": len(self.universe),
             "live_market_data": self.last_source != "not-yet-queried",
+            "capabilities": self.capabilities.to_dict(),
         }
 
     def get_stock_universe_sync(

@@ -43,6 +43,13 @@ class NewsArticle(Base):
     # Timestamps
     published_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
     ingested_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())
+    first_seen_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    received_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    available_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True, index=True)
+    revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
+    # external_id is the provider's source_event_id. Timing remains NULL until
+    # supplied by the source; ingestion must not fabricate availability.
 
     # Processing status
     is_processed: Mapped[bool] = mapped_column(Boolean, default=False)

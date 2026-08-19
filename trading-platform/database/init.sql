@@ -7,9 +7,104 @@ CREATE TYPE asset_status AS ENUM ('active', 'delisted', 'suspended');
 -- Create enum for signal direction
 CREATE TYPE signal_direction AS ENUM ('long', 'short', 'neutral');
 
+-- Immutable security master. External identifiers remain NULL unless supplied by a provider.
+CREATE TABLE securities (
+    id SERIAL PRIMARY KEY,
+    security_type VARCHAR(50) NOT NULL DEFAULT 'COMMON_STOCK',
+    display_name VARCHAR(255),
+    primary_exchange VARCHAR(50),
+    currency VARCHAR(10),
+    country VARCHAR(10),
+    current_status VARCHAR(30) NOT NULL DEFAULT 'UNKNOWN',
+    figi VARCHAR(20) UNIQUE,
+    composite_figi VARCHAR(20) UNIQUE,
+    isin VARCHAR(20) UNIQUE,
+    cusip VARCHAR(20) UNIQUE,
+    provider_identifiers JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+-- All effective-dated ranges in Stage C are half-open: [valid_from, valid_to).
+CREATE TABLE security_symbols (
+    id SERIAL PRIMARY KEY,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    ticker VARCHAR(20) NOT NULL,
+    exchange VARCHAR(50),
+    valid_from DATE NOT NULL,
+    valid_to DATE,
+    source VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_security_symbol_start UNIQUE (security_id, ticker, exchange, valid_from),
+    CONSTRAINT ck_security_symbol_valid_range CHECK (valid_to IS NULL OR valid_to > valid_from)
+);
+
+CREATE INDEX ix_security_symbols_lookup
+    ON security_symbols (ticker, valid_from, valid_to);
+
+CREATE TABLE security_status_history (
+    id SERIAL PRIMARY KEY,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    status VARCHAR(30) NOT NULL,
+    valid_from DATE NOT NULL,
+    valid_to DATE,
+    source VARCHAR(100) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_security_status_start UNIQUE (security_id, valid_from),
+    CONSTRAINT ck_security_status_valid_range CHECK (valid_to IS NULL OR valid_to > valid_from)
+);
+
+CREATE INDEX ix_security_status_lookup
+    ON security_status_history (security_id, valid_from, valid_to);
+
+CREATE TABLE universe_definitions (
+    id SERIAL PRIMARY KEY,
+    code VARCHAR(100) UNIQUE NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    source VARCHAR(100) NOT NULL,
+    methodology JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE universe_memberships (
+    id SERIAL PRIMARY KEY,
+    universe_id INTEGER NOT NULL REFERENCES universe_definitions(id) ON DELETE CASCADE,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    valid_from DATE NOT NULL,
+    valid_to DATE,
+    source VARCHAR(100) NOT NULL,
+    available_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_universe_membership_start UNIQUE (universe_id, security_id, valid_from),
+    CONSTRAINT ck_universe_membership_valid_range CHECK (valid_to IS NULL OR valid_to > valid_from)
+);
+
+CREATE INDEX ix_universe_membership_lookup
+    ON universe_memberships (universe_id, valid_from, valid_to);
+
+CREATE TABLE corporate_actions (
+    id SERIAL PRIMARY KEY,
+    security_id INTEGER NOT NULL REFERENCES securities(id) ON DELETE CASCADE,
+    action_type VARCHAR(30) NOT NULL,
+    event_date DATE,
+    effective_date DATE NOT NULL,
+    available_at TIMESTAMP WITH TIME ZONE,
+    source VARCHAR(100) NOT NULL,
+    source_event_id VARCHAR(200),
+    action_metadata JSONB,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_corporate_action_source_event UNIQUE (source, source_event_id)
+);
+
+CREATE INDEX ix_corporate_actions_security_date
+    ON corporate_actions (security_id, effective_date);
+
 -- Assets table (stocks, ETFs)
 CREATE TABLE assets (
     id SERIAL PRIMARY KEY,
+    security_id INTEGER REFERENCES securities(id) ON DELETE SET NULL,
     ticker VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(255),
     exchange VARCHAR(50),
@@ -20,6 +115,8 @@ CREATE TABLE assets (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
+
+CREATE INDEX ix_assets_security_id ON assets (security_id);
 
 -- Create hypertable for daily prices
 CREATE TABLE prices_daily (
