@@ -186,6 +186,7 @@ class BacktestEngine:
         equity_history: List[Dict[str, Any]] = []
         latest_close: Dict[str, float] = {}
         cash = self.initial_capital
+        execution_model = ExecutionModel(config.execution_model)
 
         for current_date in all_dates:
             for ticker in ticker_sessions:
@@ -247,12 +248,16 @@ class BacktestEngine:
                     "entry_commission_cost": costs["commission"],
                     "entry_spread_cost": costs["spread"],
                     "entry_slippage_cost": costs["slippage"],
+                    "intraday_limit_entry": (
+                        execution_model == ExecutionModel.LIMIT
+                        and float(market_row["open"]) > reference_price
+                    ),
                 }
                 new_tickers.append(ticker)
 
-            execution_model = ExecutionModel(config.execution_model)
             if execution_model in {ExecutionModel.NEXT_OPEN, ExecutionModel.LIMIT}:
-                # An open/limit entry can hit a stop or target later in its entry bar.
+                # Open fills expose the whole bar; intraday limit fills use a
+                # restricted adverse-only same-bar path in _determine_exit.
                 cash += self._process_exits(
                     positions=positions,
                     current_date=current_date,
@@ -316,7 +321,12 @@ class BacktestEngine:
         }
         equity_df = pl.DataFrame(equity_history)
         benchmark_curve = self._build_benchmark_curve(benchmark_data, equity_df, config)
-        metrics = self._calculate_metrics(equity_df, benchmark_curve, trades)
+        metrics = self._calculate_metrics(
+            equity_df,
+            benchmark_curve,
+            trades,
+            self.initial_capital,
+        )
         avg_score = float(buy_signals["score"].mean() or 0.0) if len(buy_signals) else 0.0
 
         return BacktestResult(
@@ -359,21 +369,22 @@ class BacktestEngine:
             except ValueError:
                 continue
 
+            available_at = self._as_datetime(signal.get("available_at"))
+            if available_at is None:
+                continue
+
             if execution_model == ExecutionModel.MARKET_ON_CLOSE:
                 execution_date = sessions[signal_index]
                 execution_time = self._execution_datetime(execution_date, execution_model)
-                available_at = self._as_datetime(signal.get("available_at"))
-                if available_at is None or available_at >= execution_time:
+                if available_at >= execution_time:
                     continue
             else:
                 if signal_index + 1 >= len(sessions):
                     continue
                 execution_date = sessions[signal_index + 1]
-                available_at = self._as_datetime(signal.get("available_at"))
-                if available_at is not None:
-                    execution_time = self._execution_datetime(execution_date, execution_model)
-                    if available_at > execution_time:
-                        continue
+                execution_time = self._execution_datetime(execution_date, execution_model)
+                if available_at > execution_time:
+                    continue
 
             scheduled.setdefault(execution_date, []).append(signal)
 
@@ -455,7 +466,17 @@ class BacktestEngine:
 
             current_index = ticker_session_index[ticker][current_date]
             holding_period = current_index - position["entry_session_index"]
-            exit_details = self._determine_exit(position, market_row, holding_period, config, allow_gap)
+            exit_details = self._determine_exit(
+                position,
+                market_row,
+                holding_period,
+                config,
+                allow_gap,
+                intraday_limit_entry=(
+                    holding_period == 0
+                    and bool(position.get("intraday_limit_entry"))
+                ),
+            )
             if exit_details is None:
                 continue
 
@@ -481,12 +502,18 @@ class BacktestEngine:
         holding_period: int,
         config: StrategyConfig,
         allow_gap: bool,
+        intraday_limit_entry: bool = False,
     ) -> Optional[Tuple[float, str, bool]]:
         stop_price = position["entry_reference_price"] * (1 - config.stop_loss_pct)
         target_price = position["entry_reference_price"] * (1 + config.take_profit_pct)
         open_price = float(market_row["open"])
         low_price = float(market_row["low"])
         high_price = float(market_row["high"])
+
+        if intraday_limit_entry:
+            if low_price <= stop_price:
+                return stop_price, "stop_loss", False
+            return None
 
         if allow_gap and open_price <= stop_price:
             return open_price, "stop_gap", False
@@ -642,6 +669,7 @@ class BacktestEngine:
         equity_df: pl.DataFrame,
         benchmark_curve: Optional[pl.DataFrame],
         trades: List[Trade],
+        initial_capital: float,
     ) -> PerformanceMetrics:
         trades_df = None
         if trades:
@@ -659,4 +687,5 @@ class BacktestEngine:
             equity_curve=equity_df.select(["date", "equity"]),
             benchmark_curve=benchmark_curve,
             trades=trades_df,
+            initial_capital=initial_capital,
         )

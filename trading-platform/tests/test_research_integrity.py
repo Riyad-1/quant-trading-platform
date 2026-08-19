@@ -7,6 +7,7 @@ import polars as pl
 import pytest
 
 from services.backtesting.engine import BacktestEngine
+from services.backtesting.metrics import PerformanceMetrics
 from services.backtesting.strategy import (
     ExecutionModel,
     IntrabarPolicy,
@@ -37,13 +38,14 @@ class OneShotStrategy(Strategy):
         return []
 
     def generate_signals(self, data: pl.DataFrame) -> pl.DataFrame:
+        available_at = datetime.combine(self.signal_session, time(self.available_hour))
         frame = data.filter(pl.col("timestamp") == self.signal_session).with_columns(
             pl.lit(1).alias("signal"),
             pl.lit(100.0).alias("score"),
             pl.col("timestamp").alias("feature_timestamp"),
-            pl.col("timestamp").alias("signal_timestamp"),
-            pl.col("timestamp").alias("decision_timestamp"),
-            pl.lit(datetime.combine(self.signal_session, time(self.available_hour))).alias("available_at"),
+            pl.lit(available_at).alias("signal_timestamp"),
+            pl.lit(available_at).alias("decision_timestamp"),
+            pl.lit(available_at).alias("available_at"),
         )
         if self.limit_price is not None:
             frame = frame.with_columns(pl.lit(self.limit_price).alias("limit_price"))
@@ -212,6 +214,24 @@ def test_feature_output_has_explicit_point_in_time_metadata():
     assert row["availability_rule"] == "US_EQUITY_SESSION_CLOSE_CONSERVATIVE_21_UTC"
 
 
+def test_momentum_signal_and_decision_timestamps_respect_availability():
+    features = FeatureEngine().calculate_all_features(
+        feature_prices("AAA", date(2024, 1, 1), 280, 100.0, 0.2)
+    )
+    signals = MomentumBreakoutStrategy().generate_signals(
+        features.rename({"time": "timestamp"}).with_columns(
+            pl.lit(1.5).alias("relative_strength_spy")
+        )
+    )
+
+    assert signals.select(
+        (pl.col("signal_timestamp") == pl.col("available_at")).all()
+    ).item()
+    assert signals.select(
+        (pl.col("decision_timestamp") == pl.col("available_at")).all()
+    ).item()
+
+
 def test_close_signal_executes_at_next_session_open_with_ordered_timestamps():
     sessions = [date(2024, 1, 5), date(2024, 1, 8), date(2024, 1, 9)]
     data = bars(sessions, [100.0, 120.0, 121.0], closes=[100.0, 120.0, 122.0])
@@ -220,11 +240,12 @@ def test_close_signal_executes_at_next_session_open_with_ordered_timestamps():
     result = BacktestEngine().run(data, OneShotStrategy(sessions[0], config))
     trade = result.trades[0]
 
-    assert trade.signal_timestamp == sessions[0]
-    assert trade.decision_timestamp == sessions[0]
+    expected_availability = datetime.combine(sessions[0], time(21))
+    assert trade.signal_timestamp == expected_availability
+    assert trade.decision_timestamp == expected_availability
     assert trade.execution_timestamp == sessions[1]
     assert trade.entry_reference_price == 120.0
-    assert trade.signal_timestamp < trade.execution_timestamp
+    assert trade.signal_timestamp < datetime.combine(trade.execution_timestamp, time.min)
 
 
 def test_market_on_close_requires_explicit_pre_close_availability():
@@ -257,6 +278,22 @@ def test_value_unavailable_at_next_open_cannot_enter_the_backtest():
     assert result.trades == []
 
 
+def test_signal_without_availability_metadata_cannot_enter_the_backtest():
+    sessions = [date(2024, 2, 1), date(2024, 2, 2), date(2024, 2, 5)]
+    data = bars(sessions, [100.0, 101.0, 102.0])
+    config = strategy_config()
+    strategy = OneShotStrategy(sessions[0], config)
+    original_generate = strategy.generate_signals
+
+    def missing_availability(frame):
+        return original_generate(frame).drop("available_at")
+
+    strategy.generate_signals = missing_availability
+    result = BacktestEngine().run(data, strategy)
+
+    assert result.trades == []
+
+
 @pytest.mark.parametrize(
     ("execution_model", "limit_price", "expected_price"),
     [
@@ -281,6 +318,60 @@ def test_explicit_next_close_and_limit_execution(execution_model, limit_price, e
     assert result.trades[0].entry_reference_price == expected_price
 
 
+def test_intraday_limit_fill_does_not_claim_an_earlier_same_bar_target():
+    sessions = [date(2024, 3, 1), date(2024, 3, 4), date(2024, 3, 5)]
+    data = bars(
+        sessions,
+        [100.0, 110.0, 101.0],
+        highs=[101.0, 120.0, 102.0],
+        lows=[99.0, 99.0, 100.0],
+        closes=[100.0, 100.0, 101.0],
+    )
+    config = strategy_config(
+        execution_model=ExecutionModel.LIMIT,
+        holding_period=10,
+        stop_loss_pct=0.50,
+        take_profit_pct=0.05,
+    )
+
+    trade = BacktestEngine().run(
+        data,
+        OneShotStrategy(sessions[0], config, limit_price=100.0),
+    ).trades[0]
+
+    assert trade.entry_date == sessions[1]
+    assert trade.entry_reference_price == 100.0
+    assert trade.exit_date == sessions[2]
+    assert trade.exit_reason == "end_of_backtest"
+
+
+def test_intraday_limit_fill_still_applies_same_bar_adverse_stop():
+    sessions = [date(2024, 3, 1), date(2024, 3, 4), date(2024, 3, 5)]
+    data = bars(
+        sessions,
+        [100.0, 110.0, 101.0],
+        highs=[101.0, 120.0, 102.0],
+        lows=[99.0, 90.0, 100.0],
+        closes=[100.0, 100.0, 101.0],
+    )
+    config = strategy_config(
+        execution_model=ExecutionModel.LIMIT,
+        holding_period=10,
+        stop_loss_pct=0.05,
+        take_profit_pct=0.50,
+    )
+
+    trade = BacktestEngine().run(
+        data,
+        OneShotStrategy(sessions[0], config, limit_price=100.0),
+    ).trades[0]
+
+    assert trade.entry_date == sessions[1]
+    assert trade.exit_date == sessions[1]
+    assert trade.exit_reason == "stop_loss"
+    assert trade.exit_reference_price == 95.0
+
+
 def test_entry_and_exit_costs_reconcile_gross_to_net_and_final_equity():
     sessions = [date(2024, 4, 1), date(2024, 4, 2), date(2024, 4, 3)]
     data = bars(sessions, [100.0, 100.0, 110.0], closes=[100.0, 100.0, 110.0])
@@ -303,6 +394,24 @@ def test_entry_and_exit_costs_reconcile_gross_to_net_and_final_equity():
     assert result.final_equity == pytest.approx(result.initial_capital + trade.net_pnl)
     assert result.gross_final_equity == pytest.approx(result.initial_capital + trade.gross_pnl)
     assert result.gross_total_return > result.net_total_return
+    assert result.metrics.total_return == pytest.approx(result.net_total_return)
+
+
+def test_performance_metrics_use_true_initial_capital_before_first_sample():
+    equity_curve = pl.DataFrame(
+        {
+            "date": [date(2024, 4, 1), date(2024, 4, 2)],
+            "equity": [90_000.0, 110_000.0],
+        }
+    )
+
+    metrics = PerformanceMetrics.calculate(
+        equity_curve,
+        initial_capital=100_000.0,
+    )
+
+    assert metrics.total_return == pytest.approx(0.10)
+    assert metrics.max_drawdown == pytest.approx(-0.10)
 
 
 def test_gap_through_stop_fills_at_open_not_stop_level():

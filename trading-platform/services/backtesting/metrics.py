@@ -87,7 +87,8 @@ class PerformanceMetrics:
         equity_curve: pl.DataFrame,
         benchmark_curve: Optional[pl.DataFrame] = None,
         trades: Optional[pl.DataFrame] = None,
-        risk_free_rate: float = 0.02
+        risk_free_rate: float = 0.02,
+        initial_capital: Optional[float] = None,
     ) -> "PerformanceMetrics":
         """
         Calculate all performance metrics from equity curve
@@ -97,21 +98,27 @@ class PerformanceMetrics:
             benchmark_curve: Optional benchmark DataFrame [date, equity]
             trades: Optional DataFrame of individual trades
             risk_free_rate: Annual risk-free rate
+            initial_capital: Capital immediately before the first equity sample
         """
         # Ensure sorted by date
         equity_curve = equity_curve.sort("date")
+        if equity_curve.is_empty():
+            raise ValueError("Equity curve must not be empty")
 
-        # Calculate daily returns
-        df = equity_curve.with_columns([
-            (pl.col("equity").pct_change()).fill_null(0).alias("daily_return")
-        ])
+        equity_values = np.asarray(equity_curve["equity"].to_numpy(), dtype=float)
+        starting_equity = float(
+            initial_capital if initial_capital is not None else equity_values[0]
+        )
+        if starting_equity <= 0:
+            raise ValueError("Initial capital must be positive")
 
-        returns = np.asarray(df["daily_return"].to_numpy(), dtype=float)
+        previous_equity = np.concatenate(([starting_equity], equity_values[:-1]))
+        returns = (equity_values / previous_equity) - 1
+        df = equity_curve.with_columns(pl.Series("daily_return", returns))
         dates = df["date"].to_numpy()
 
         # Basic returns
-        total_equity = equity_curve["equity"][-1]
-        starting_equity = equity_curve["equity"][0]
+        total_equity = float(equity_values[-1])
         total_return = (total_equity / starting_equity) - 1
 
         n_years = len(dates) / 252.0
@@ -131,8 +138,8 @@ class PerformanceMetrics:
         sortino_ratio = (np.mean(excess_returns) / downside_deviation) * np.sqrt(252) if downside_deviation > 0 else 0
 
         # Drawdown analysis
-        cumulative = np.cumprod(1 + returns)
-        running_max = np.maximum.accumulate(cumulative)
+        cumulative = equity_values / starting_equity
+        running_max = np.maximum.accumulate(np.concatenate(([1.0], cumulative)))[1:]
         drawdowns = (cumulative - running_max) / running_max
 
         max_drawdown = np.min(drawdowns)
@@ -154,12 +161,25 @@ class PerformanceMetrics:
         # Benchmark comparison uses an explicit same-session inner join.
         if benchmark_curve is not None and not benchmark_curve.is_empty():
             benchmark_curve = benchmark_curve.sort("date")
+            benchmark_equity = np.asarray(
+                benchmark_curve["equity"].to_numpy(),
+                dtype=float,
+            )
+            benchmark_previous = np.concatenate(
+                ([starting_equity], benchmark_equity[:-1])
+            )
+            benchmark_with_returns = benchmark_curve.with_columns(
+                pl.Series(
+                    "benchmark_return",
+                    (benchmark_equity / benchmark_previous) - 1,
+                )
+            )
             aligned = (
                 df.select(["date", pl.col("daily_return").alias("strategy_return")])
                 .join(
-                    benchmark_curve.with_columns(
-                        pl.col("equity").pct_change().fill_null(0).alias("benchmark_return")
-                    ).select(["date", "equity", "benchmark_return"]),
+                    benchmark_with_returns.select(
+                        ["date", "equity", "benchmark_return"]
+                    ),
                     on="date",
                     how="inner",
                 )
@@ -173,7 +193,7 @@ class PerformanceMetrics:
                 bench_variance = np.var(bench_returns)
                 beta = covariance / bench_variance if bench_variance > 0 else 0.0
 
-                benchmark_total_return = (aligned["equity"][-1] / aligned["equity"][0]) - 1
+                benchmark_total_return = (aligned["equity"][-1] / starting_equity) - 1
                 excess_return = total_return - benchmark_total_return
                 alpha = cagr - (
                     risk_free_rate + beta * (benchmark_total_return / n_years - risk_free_rate)

@@ -168,20 +168,20 @@ class MomentumBreakoutStrategy(Strategy):
             pl.col("composite_score").clip(0, 100).alias("score")
         ])
 
-        feature_timestamp = "event_time" if "event_time" in df.columns else "timestamp"
-        timing_expressions = [
-            pl.col(feature_timestamp).alias("feature_timestamp"),
-            pl.col("timestamp").alias("signal_timestamp"),
-            pl.col("timestamp").alias("decision_timestamp"),
-        ]
         if "available_at" not in df.columns:
-            timing_expressions.append(
+            df = df.with_columns(
                 (
                     pl.col("timestamp").cast(pl.Date).cast(pl.Datetime(time_unit="us"))
                     + pl.duration(hours=21)
                 ).alias("available_at")
             )
-        df = df.with_columns(timing_expressions)
+
+        feature_timestamp = "event_time" if "event_time" in df.columns else "timestamp"
+        df = df.with_columns(
+            pl.col(feature_timestamp).alias("feature_timestamp"),
+            pl.col("available_at").alias("signal_timestamp"),
+            pl.col("available_at").alias("decision_timestamp"),
+        )
 
         selected_columns = [
             "timestamp", "ticker", "signal", "score",
