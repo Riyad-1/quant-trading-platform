@@ -4,8 +4,26 @@ Defines trading strategies with entry/exit rules
 """
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import List, Optional, Dict, Any
 import polars as pl
+
+
+class ExecutionModel(str, Enum):
+    """Supported signal-to-fill policies for daily bars."""
+
+    NEXT_OPEN = "next_open"
+    NEXT_CLOSE = "next_close"
+    MARKET_ON_CLOSE = "market_on_close"
+    LIMIT = "limit"
+
+
+class IntrabarPolicy(str, Enum):
+    """Policy used when a daily bar touches both stop and target."""
+
+    CONSERVATIVE = "conservative"
+    STOP_FIRST = "stop_first"
+    TARGET_FIRST = "target_first"
 
 
 @dataclass
@@ -20,6 +38,10 @@ class StrategyConfig:
     min_volume: int = 100000
     transaction_cost_pct: float = 0.001  # 0.1% per trade
     slippage_pct: float = 0.0005  # 0.05% slippage
+    spread_pct: float = 0.0002  # Full quoted spread; half is paid per side
+    execution_model: ExecutionModel = ExecutionModel.NEXT_OPEN
+    intrabar_policy: IntrabarPolicy = IntrabarPolicy.CONSERVATIVE
+    limit_price_column: str = "limit_price"
 
     # Universe filters
     min_market_cap: float = 300_000_000  # $300M
@@ -146,8 +168,28 @@ class MomentumBreakoutStrategy(Strategy):
             pl.col("composite_score").clip(0, 100).alias("score")
         ])
 
-        return df.select([
+        feature_timestamp = "event_time" if "event_time" in df.columns else "timestamp"
+        timing_expressions = [
+            pl.col(feature_timestamp).alias("feature_timestamp"),
+            pl.col("timestamp").alias("signal_timestamp"),
+            pl.col("timestamp").alias("decision_timestamp"),
+        ]
+        if "available_at" not in df.columns:
+            timing_expressions.append(
+                (
+                    pl.col("timestamp").cast(pl.Date).cast(pl.Datetime(time_unit="us"))
+                    + pl.duration(hours=21)
+                ).alias("available_at")
+            )
+        df = df.with_columns(timing_expressions)
+
+        selected_columns = [
             "timestamp", "ticker", "signal", "score",
             "rs_score", "momentum_score", "volume_score",
-            "breakout_score", "trend_score", "composite_score"
-        ])
+            "breakout_score", "trend_score", "composite_score",
+            "feature_timestamp", "signal_timestamp", "decision_timestamp", "available_at",
+        ]
+        if self.config.limit_price_column in df.columns:
+            selected_columns.append(self.config.limit_price_column)
+
+        return df.select(selected_columns)

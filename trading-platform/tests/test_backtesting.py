@@ -164,9 +164,9 @@ class TestBacktestEngine:
                 "sma_200": close * 0.90,
                 "rsi_14": 60,
                 "roc_20": 0.15,
-                "relative_strength_spy": 1.2,
-                "volume_sma_20_ratio": 1.5,
-                "distance_from_20d_high": -0.02,
+                "relative_strength_spy": 1.5,
+                "volume_sma_20_ratio": 3.0,
+                "distance_from_20d_high": 0.0,
             })
 
         df = pl.DataFrame(data)
@@ -184,8 +184,8 @@ class TestBacktestEngine:
 
         # Should have some trades with stop_loss exit reason
         stopped_trades = [t for t in result.trades if t.exit_reason == "stop_loss"]
-        # At least verify trades were generated
-        assert len(result.trades) >= 0  # May or may not have trades depending on signals
+        assert result.total_signals > 0
+        assert stopped_trades
 
     def test_no_signals_empty_result(self):
         """Test backtest handles no signals gracefully"""

@@ -82,6 +82,7 @@ class Position:
     current_price: float = 0.0
     unrealized_pnl: float = 0.0
     unrealized_pnl_pct: float = 0.0
+    entry_commission: float = 0.0
     opened_at: datetime = field(default_factory=datetime.utcnow)
 
     def update_price(self, price: float):
@@ -98,6 +99,7 @@ class Position:
             "current_price": self.current_price,
             "unrealized_pnl": self.unrealized_pnl,
             "unrealized_pnl_pct": self.unrealized_pnl_pct,
+            "entry_commission": self.entry_commission,
             "opened_at": self.opened_at.isoformat()
         }
 
@@ -220,15 +222,35 @@ class PaperTradingEngine:
         self.current_prices[ticker] = price
         if ticker in self.positions:
             self.positions[ticker].update_price(price)
+        self._refresh_sector_exposure()
 
     def set_sector_mapping(self, ticker: str, sector: str):
         """Map ticker to sector for concentration checks"""
         self.ticker_to_sector[ticker] = sector
+        self._refresh_sector_exposure()
 
     def calculate_commission(self, quantity: int, price: float) -> float:
         """Calculate commission with min/max bounds"""
-        base_commission = quantity * price * self.commission_per_share
+        base_commission = abs(quantity) * self.commission_per_share
         return max(self.min_commission, min(self.max_commission, base_commission))
+
+    def get_net_liquidation_value(self) -> float:
+        """Return cash plus positions marked at their latest available prices."""
+        return self.cash + sum(
+            position.quantity * position.current_price
+            for position in self.positions.values()
+        )
+
+    def _current_sector_exposure(self) -> Dict[str, float]:
+        exposure: Dict[str, float] = {}
+        for ticker, position in self.positions.items():
+            sector = self.ticker_to_sector.get(ticker, "Unknown")
+            exposure[sector] = exposure.get(sector, 0.0) + position.quantity * position.current_price
+        return exposure
+
+    def _refresh_sector_exposure(self) -> None:
+        """Keep the public sector exposure cache reconciled to open positions."""
+        self.sector_exposure = self._current_sector_exposure()
 
     def apply_slippage(self, price: float, side: OrderSide) -> float:
         """Apply slippage to execution price"""
@@ -249,20 +271,25 @@ class PaperTradingEngine:
         Returns (allowed, rejection_reason)
         """
         order_value = quantity * price
+        net_liquidation_value = self.get_net_liquidation_value()
+        existing_position_value = 0.0
+        if ticker in self.positions:
+            existing_position_value = self.positions[ticker].quantity * price
 
         # Check max position size
-        max_position_value = self.cash * self.max_position_pct
-        if order_value > max_position_value:
-            return False, f"Position size ${order_value:.2f} exceeds max ${max_position_value:.2f}"
+        max_position_value = net_liquidation_value * self.max_position_pct
+        projected_position_value = existing_position_value + order_value
+        if projected_position_value > max_position_value:
+            return False, f"Position size ${projected_position_value:.2f} exceeds max ${max_position_value:.2f}"
 
         # Check max portfolio positions
-        if len(self.positions) >= self.max_portfolio_positions:
+        if ticker not in self.positions and len(self.positions) >= self.max_portfolio_positions:
             return False, f"Maximum portfolio positions ({self.max_portfolio_positions}) reached"
 
         # Check sector concentration
         sector = self.ticker_to_sector.get(ticker, "Unknown")
-        current_sector_value = self.sector_exposure.get(sector, 0)
-        max_sector_value = self.cash * self.max_sector_pct
+        current_sector_value = self._current_sector_exposure().get(sector, 0)
+        max_sector_value = net_liquidation_value * self.max_sector_pct
 
         if current_sector_value + order_value > max_sector_value:
             return False, f"Sector {sector} exposure would exceed max ${max_sector_value:.2f}"
@@ -371,17 +398,18 @@ class PaperTradingEngine:
                 total_shares = pos.quantity + order.quantity
                 pos.avg_cost = ((pos.avg_cost * pos.quantity) + (order.quantity * fill_price)) / total_shares
                 pos.quantity = total_shares
+                pos.entry_commission += commission
+                pos.update_price(current_price)
             else:
                 self.positions[order.ticker] = Position(
                     ticker=order.ticker,
                     quantity=order.quantity,
                     avg_cost=fill_price,
-                    current_price=fill_price
+                    current_price=current_price,
+                    entry_commission=commission,
                 )
 
-            # Update sector exposure
-            sector = self.ticker_to_sector.get(order.ticker, "Unknown")
-            self.sector_exposure[sector] = self.sector_exposure.get(sector, 0) + (order.quantity * fill_price)
+            self._refresh_sector_exposure()
 
         # Execute sell
         elif order.side == OrderSide.SELL:
@@ -397,18 +425,27 @@ class PaperTradingEngine:
                 order.rejection_reason = "Insufficient shares"
                 return
 
+            quantity_before_sale = pos.quantity
+            allocated_entry_commission = pos.entry_commission * (order.quantity / quantity_before_sale)
+
             # Calculate proceeds
             proceeds = (order.quantity * fill_price) - commission
             self.cash += proceeds
 
             # Update position
             pos.quantity -= order.quantity
+            pos.entry_commission -= allocated_entry_commission
 
             if pos.quantity == 0:
                 # Close position completely
                 del self.positions[order.ticker]
 
                 # Create trade record
+                net_pnl = (
+                    (fill_price - pos.avg_cost) * order.quantity
+                    - allocated_entry_commission
+                    - commission
+                )
                 trade = Trade(
                     ticker=order.ticker,
                     side=OrderSide.BUY,  # Original side was buy
@@ -417,9 +454,9 @@ class PaperTradingEngine:
                     exit_price=fill_price,
                     entry_date=pos.opened_at,
                     exit_date=datetime.utcnow(),
-                    commission=commission,
-                    pnl=(fill_price - pos.avg_cost) * order.quantity - commission,
-                    pnl_pct=((fill_price / pos.avg_cost) - 1) * 100,
+                    commission=allocated_entry_commission + commission,
+                    pnl=net_pnl,
+                    pnl_pct=(net_pnl / (pos.avg_cost * order.quantity)) * 100,
                     holding_period_days=(datetime.utcnow() - pos.opened_at).days,
                     exit_reason="position_closed",
                     strategy_id=order.strategy_id,
@@ -428,11 +465,10 @@ class PaperTradingEngine:
                 )
                 self.closed_trades.append(trade)
 
-                # Update sector exposure
-                sector = self.ticker_to_sector.get(order.ticker, "Unknown")
-                self.sector_exposure[sector] = max(0, self.sector_exposure.get(sector, 0) - (order.quantity * pos.avg_cost))
             else:
-                pos.update_price(fill_price)
+                pos.update_price(current_price)
+
+            self._refresh_sector_exposure()
 
         # Update order status
         order.status = OrderStatus.FILLED
@@ -476,6 +512,7 @@ class PaperTradingEngine:
 
     def take_snapshot(self, snapshot_date: date):
         """Create a portfolio snapshot for historical tracking"""
+        self._refresh_sector_exposure()
         positions_value = sum(
             pos.quantity * pos.current_price
             for pos in self.positions.values()
@@ -508,6 +545,7 @@ class PaperTradingEngine:
 
     def get_portfolio_summary(self) -> dict:
         """Get current portfolio summary"""
+        self._refresh_sector_exposure()
         positions_value = sum(
             pos.quantity * pos.current_price
             for pos in self.positions.values()
@@ -517,12 +555,7 @@ class PaperTradingEngine:
         total_pnl = total_value - self.initial_capital
         total_pnl_pct = (total_pnl / self.initial_capital) * 100 if self.initial_capital > 0 else 0
 
-        # Calculate sector exposure
-        sector_breakdown = {}
-        for ticker, pos in self.positions.items():
-            sector = self.ticker_to_sector.get(ticker, "Unknown")
-            value = pos.quantity * pos.current_price
-            sector_breakdown[sector] = sector_breakdown.get(sector, 0) + value
+        sector_breakdown = dict(self.sector_exposure)
 
         return {
             "initial_capital": self.initial_capital,

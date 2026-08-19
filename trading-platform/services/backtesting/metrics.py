@@ -151,28 +151,42 @@ class PerformanceMetrics:
 
         calmar_ratio = cagr / abs(max_drawdown) if max_drawdown != 0 else 0
 
-        # Benchmark comparison
-        if benchmark_curve is not None:
+        # Benchmark comparison uses an explicit same-session inner join.
+        if benchmark_curve is not None and not benchmark_curve.is_empty():
             benchmark_curve = benchmark_curve.sort("date")
-            bench_returns = np.asarray(benchmark_curve.with_columns([
-                (pl.col("equity").pct_change()).fill_null(0).alias("daily_return")
-            ])["daily_return"].to_numpy(), dtype=float)
+            aligned = (
+                df.select(["date", pl.col("daily_return").alias("strategy_return")])
+                .join(
+                    benchmark_curve.with_columns(
+                        pl.col("equity").pct_change().fill_null(0).alias("benchmark_return")
+                    ).select(["date", "equity", "benchmark_return"]),
+                    on="date",
+                    how="inner",
+                )
+                .sort("date")
+            )
 
-            # Beta and Alpha
-            if len(returns) == len(bench_returns) and len(returns) > 1:
-                covariance = np.cov(returns, bench_returns)[0, 1]
+            if len(aligned) > 1:
+                aligned_returns = np.asarray(aligned["strategy_return"].to_numpy(), dtype=float)
+                bench_returns = np.asarray(aligned["benchmark_return"].to_numpy(), dtype=float)
+                covariance = np.cov(aligned_returns, bench_returns)[0, 1]
                 bench_variance = np.var(bench_returns)
-                beta = covariance / bench_variance if bench_variance > 0 else 1
+                beta = covariance / bench_variance if bench_variance > 0 else 0.0
 
-                benchmark_total_return = (benchmark_curve["equity"][-1] / benchmark_curve["equity"][0]) - 1
+                benchmark_total_return = (aligned["equity"][-1] / aligned["equity"][0]) - 1
                 excess_return = total_return - benchmark_total_return
-                alpha = cagr - (risk_free_rate + beta * (benchmark_total_return / n_years - risk_free_rate)) if n_years > 0 else 0
-
-                correlation = np.corrcoef(returns, bench_returns)[0, 1] if len(returns) > 1 else 0
+                alpha = cagr - (
+                    risk_free_rate + beta * (benchmark_total_return / n_years - risk_free_rate)
+                ) if n_years > 0 else 0.0
+                correlation = (
+                    float(np.corrcoef(aligned_returns, bench_returns)[0, 1])
+                    if np.std(aligned_returns) > 0 and np.std(bench_returns) > 0
+                    else 0.0
+                )
             else:
-                beta, alpha, excess_return, correlation = 1.0, 0.0, 0.0, 0.0
+                beta, alpha, excess_return, correlation = 0.0, 0.0, 0.0, 0.0
         else:
-            beta, alpha, excess_return, correlation = 1.0, 0.0, 0.0, 0.0
+            beta, alpha, excess_return, correlation = 0.0, 0.0, 0.0, 0.0
 
         # Trade statistics
         if trades is not None and len(trades) > 0:
