@@ -10,6 +10,7 @@ from services.backtesting.engine import BacktestEngine, BacktestResult, Trade
 from services.backtesting.strategy import MomentumBreakoutStrategy, StrategyConfig
 from services.backtesting.metrics import PerformanceMetrics
 from services.backtesting.walk_forward import WalkForwardAnalyzer
+from services.research.timing import add_daily_point_in_time_columns
 
 
 def generate_sample_price_data(
@@ -55,7 +56,10 @@ def generate_sample_price_data(
             "distance_from_20d_high": np.random.uniform(-0.15, 0.05),
         })
 
-    return pl.DataFrame(data)
+    return add_daily_point_in_time_columns(
+        pl.DataFrame(data),
+        time_col="timestamp",
+    )
 
 
 class TestBacktestEngine:
@@ -169,7 +173,10 @@ class TestBacktestEngine:
                 "distance_from_20d_high": 0.0,
             })
 
-        df = pl.DataFrame(data)
+        df = add_daily_point_in_time_columns(
+            pl.DataFrame(data),
+            time_col="timestamp",
+        )
 
         config = StrategyConfig(
             name="Test",
@@ -383,7 +390,10 @@ class TestStrategyIntegration:
                 "distance_from_20d_high": -0.03,
             })
 
-        df = pl.DataFrame(data)
+        df = add_daily_point_in_time_columns(
+            pl.DataFrame(data),
+            time_col="timestamp",
+        )
 
         strategy = MomentumBreakoutStrategy()
         engine = BacktestEngine(initial_capital=100000)

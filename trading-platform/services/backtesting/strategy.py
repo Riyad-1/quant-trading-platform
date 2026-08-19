@@ -131,6 +131,11 @@ class MomentumBreakoutStrategy(Strategy):
     def generate_signals(self, data: pl.DataFrame) -> pl.DataFrame:
         """Generate momentum breakout signals"""
         self.validate_data(data)
+        if "available_at" not in data.columns:
+            raise ValueError(
+                "MomentumBreakoutStrategy requires upstream point-in-time "
+                "metadata: missing available_at"
+            )
 
         # Calculate component scores (0-100) using proper Polars expressions
         df = data.with_columns([
@@ -167,14 +172,6 @@ class MomentumBreakoutStrategy(Strategy):
             (pl.col("composite_score") >= 70).cast(pl.Int32).alias("signal"),
             pl.col("composite_score").clip(0, 100).alias("score")
         ])
-
-        if "available_at" not in df.columns:
-            df = df.with_columns(
-                (
-                    pl.col("timestamp").cast(pl.Date).cast(pl.Datetime(time_unit="us"))
-                    + pl.duration(hours=21)
-                ).alias("available_at")
-            )
 
         feature_timestamp = "event_time" if "event_time" in df.columns else "timestamp"
         df = df.with_columns(

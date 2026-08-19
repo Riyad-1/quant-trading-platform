@@ -232,6 +232,23 @@ def test_momentum_signal_and_decision_timestamps_respect_availability():
     ).item()
 
 
+def test_momentum_strategy_requires_upstream_availability_metadata():
+    features_without_availability = (
+        FeatureEngine()
+        .calculate_all_features(
+            feature_prices("AAA", date(2024, 1, 1), 280, 100.0, 0.2)
+        )
+        .rename({"time": "timestamp"})
+        .drop("available_at")
+        .with_columns(pl.lit(1.5).alias("relative_strength_spy"))
+    )
+
+    with pytest.raises(ValueError, match="available_at"):
+        MomentumBreakoutStrategy().generate_signals(
+            features_without_availability
+        )
+
+
 def test_close_signal_executes_at_next_session_open_with_ordered_timestamps():
     sessions = [date(2024, 1, 5), date(2024, 1, 8), date(2024, 1, 9)]
     data = bars(sessions, [100.0, 120.0, 121.0], closes=[100.0, 120.0, 122.0])
