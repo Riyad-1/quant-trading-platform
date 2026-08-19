@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     ALPACA_API_KEY: str | None = None
     FRED_API_KEY: str | None = None
 
+    # OpenBB market data service
+    SCANNER_DATA_PROVIDER: str = "openbb"
+    OPENBB_BASE_URL: str = "http://localhost:6900"
+    OPENBB_PRICE_PROVIDER: str = "yfinance"
+    SCANNER_DEFAULT_TICKERS: str = (
+        "AAPL,MSFT,NVDA,AMZN,META,GOOGL,AVGO,TSLA,JPM,LLY,XOM,COST,UNH,HD,PG"
+    )
+    SCANNER_LOOKBACK_DAYS: int = 400
+    SCANNER_BENCHMARK_TICKER: str = "SPY"
+
     # LLM for news analysis
     OPENAI_API_KEY: str | None = None
 

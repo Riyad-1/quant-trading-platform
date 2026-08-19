@@ -7,6 +7,7 @@ This service orchestrates the scanner engine with data retrieval and caching.
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 import logging
+import polars as pl
 
 from services.scanner.scanner_engine import QuantScanner, StockScore, SetupType
 from services.features.engine import FeatureEngine
@@ -30,11 +31,13 @@ class ScannerService:
         self,
         data_provider: MarketDataProvider,
         feature_engine: Optional[FeatureEngine] = None,
-        scanner_config: Optional[Dict[str, Any]] = None
+        scanner_config: Optional[Dict[str, Any]] = None,
+        benchmark_ticker: str = "SPY",
     ):
         self.data_provider = data_provider
         self.feature_engine = feature_engine or FeatureEngine()
         self.scanner = QuantScanner(config=scanner_config)
+        self.benchmark_ticker = benchmark_ticker.upper()
         self._last_scan_results: Optional[List[StockScore]] = None
         self._last_scan_timestamp: Optional[datetime] = None
 
@@ -67,16 +70,21 @@ class ScannerService:
                 min_market_cap=self.scanner.min_market_cap
             )
 
-        if not tickers:
+        scan_tickers = list(dict.fromkeys(ticker.strip().upper() for ticker in tickers if ticker.strip()))
+        if not scan_tickers:
             logger.warning("No stocks found matching criteria")
             return []
 
-        logger.info(f"Scanning {len(tickers)} stocks")
+        logger.info(f"Scanning {len(scan_tickers)} stocks")
+
+        fetch_tickers = list(scan_tickers)
+        if self.benchmark_ticker not in fetch_tickers:
+            fetch_tickers.append(self.benchmark_ticker)
 
         # Retrieve price data
         end_date = datetime.now().date()
         price_data = self.data_provider.get_historical_prices(
-            tickers=tickers,
+            tickers=fetch_tickers,
             start_date=None,  # Use default lookback
             end_date=end_date
         )
@@ -85,9 +93,39 @@ class ScannerService:
             logger.warning("No price data retrieved")
             return []
 
-        # Calculate features
+        # Calculate each symbol independently so rolling windows never cross ticker boundaries.
         logger.info("Calculating features...")
-        features_df = self.feature_engine.calculate_all_features(price_data)
+        latest_feature_rows = []
+        for ticker in fetch_tickers:
+            ticker_prices = price_data.filter(pl.col("ticker") == ticker).sort("time")
+            if ticker_prices.is_empty():
+                logger.warning("No price history returned for %s", ticker)
+                continue
+            ticker_features = self.feature_engine.calculate_all_features(ticker_prices)
+            latest_feature_rows.append(ticker_features.tail(1))
+
+        if not latest_feature_rows:
+            logger.warning("No per-symbol features calculated")
+            return []
+
+        features_df = pl.concat(latest_feature_rows, how="diagonal_relaxed")
+
+        benchmark_rows = features_df.filter(pl.col("ticker") == self.benchmark_ticker)
+        benchmark_return = (
+            benchmark_rows["roc_60"][0]
+            if benchmark_rows.height and benchmark_rows["roc_60"][0] is not None
+            else None
+        )
+        if benchmark_return is None:
+            features_df = features_df.with_columns(
+                pl.lit(None, dtype=pl.Float64).alias("relative_strength_spy")
+            )
+        else:
+            features_df = features_df.with_columns(
+                (pl.col("roc_60") - float(benchmark_return)).alias("relative_strength_spy")
+            )
+
+        features_df = features_df.filter(pl.col("ticker").is_in(scan_tickers))
 
         if features_df.height == 0:
             logger.warning("No features calculated")
@@ -108,6 +146,27 @@ class ScannerService:
         logger.info(f"Scan complete. Found {len(results)} opportunities")
 
         return results
+
+    def get_provider_status(self) -> Dict[str, Any]:
+        """Describe the configured provider and the source used by the latest request."""
+        status_method = getattr(self.data_provider, "status", None)
+        if callable(status_method):
+            return status_method()
+        source_name = getattr(self.data_provider, "source_name", self.data_provider.__class__.__name__)
+        return {
+            "configured_provider": source_name,
+            "active_source": source_name,
+            "fallback_source": None,
+            "last_error": None,
+            "default_universe_size": len(
+                self.data_provider.get_stock_universe_sync(
+                    min_price=self.scanner.min_price,
+                    min_volume=self.scanner.min_avg_volume,
+                    min_market_cap=self.scanner.min_market_cap,
+                )
+            ),
+            "live_market_data": not str(source_name).lower().startswith("mock"),
+        }
 
     def get_top_opportunities(self, n: int = 10) -> List[StockScore]:
         """

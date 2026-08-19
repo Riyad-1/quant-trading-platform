@@ -7,6 +7,8 @@ from .base import (
     MacroDataProvider,
     BrokerProvider,
 )
+from .openbb_provider import OpenBBMarketDataProvider
+from .yfinance_provider import YFinanceMarketDataProvider
 
 __all__ = [
     "MarketDataProvider",
@@ -14,4 +16,6 @@ __all__ = [
     "FundamentalsProvider",
     "MacroDataProvider",
     "BrokerProvider",
+    "OpenBBMarketDataProvider",
+    "YFinanceMarketDataProvider",
 ]

@@ -32,6 +32,15 @@ services:
       timeout: 5s
       retries: 5
 
+  # Isolated OpenBB data service avoids dependency conflicts with the application API
+  openbb:
+    build:
+      context: .
+      dockerfile: services/openbb/Dockerfile
+    container_name: quant_openbb
+    ports:
+      - "6900:6900"
+
   # FastAPI Backend
   api:
     build:
@@ -45,6 +54,9 @@ services:
       - DATABASE_URL=postgresql://quantuser:quantpassword@postgres:5432/quantdb
       - REDIS_URL=redis://redis:6379/0
       - ENVIRONMENT=development
+      - SCANNER_DATA_PROVIDER=openbb
+      - OPENBB_BASE_URL=http://openbb:6900
+      - OPENBB_PRICE_PROVIDER=yfinance
     volumes:
       - ./apps/api:/app/apps/api
       - ./services:/app/services
@@ -54,6 +66,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      openbb:
+        condition: service_started
 
   # Celery Worker for background tasks
   worker:

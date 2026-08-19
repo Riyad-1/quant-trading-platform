@@ -1,5 +1,7 @@
 """Scanner API endpoints - Provides REST API access to the stock scanner functionality."""
 
+import asyncio
+
 from typing import List, Optional, Dict, Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -8,7 +10,10 @@ from datetime import datetime
 from services.scanner.scanner_service import ScannerService
 from services.scanner.scanner_engine import StockScore, SetupType
 from services.data.providers.mock_provider import MockMarketDataProvider
+from services.data.providers.openbb_provider import OpenBBMarketDataProvider
+from services.data.providers.yfinance_provider import YFinanceMarketDataProvider
 from services.features.engine import FeatureEngine
+from apps.api.src.core.config import get_settings
 
 router = APIRouter(tags=["scanner"])
 
@@ -61,21 +66,83 @@ class ScannerConfigRequest(BaseModel):
     min_market_cap: int = Field(default=300000000, gt=0)
 
 
+class ScannerProviderResponse(BaseModel):
+    """Current scanner market-data source and fallback state."""
+
+    configured_provider: str
+    active_source: str
+    fallback_source: Optional[str] = None
+    openbb_data_provider: Optional[str] = None
+    openbb_url: Optional[str] = None
+    last_error: Optional[str] = None
+    default_universe_size: int
+    live_market_data: bool
+
+
 # Initialize scanner service (in production, this would come from dependency injection)
 _scanner_service: Optional[ScannerService] = None
+
+
+def _configured_tickers() -> List[str]:
+    settings = get_settings()
+    return list(
+        dict.fromkeys(
+            ticker.strip().upper()
+            for ticker in settings.SCANNER_DEFAULT_TICKERS.split(",")
+            if ticker.strip()
+        )
+    )
+
+
+def _build_data_provider():
+    settings = get_settings()
+    universe = _configured_tickers()
+    provider_name = settings.SCANNER_DATA_PROVIDER.strip().lower()
+
+    if provider_name == "mock":
+        return MockMarketDataProvider()
+
+    direct_yfinance = YFinanceMarketDataProvider(
+        universe=universe,
+        lookback_days=settings.SCANNER_LOOKBACK_DAYS,
+    )
+    if provider_name == "yfinance":
+        return direct_yfinance
+    if provider_name == "openbb":
+        return OpenBBMarketDataProvider(
+            base_url=settings.OPENBB_BASE_URL,
+            provider=settings.OPENBB_PRICE_PROVIDER,
+            universe=universe,
+            lookback_days=settings.SCANNER_LOOKBACK_DAYS,
+            fallback=direct_yfinance,
+        )
+    raise ValueError(
+        "SCANNER_DATA_PROVIDER must be one of: openbb, yfinance, mock"
+    )
+
+
+def _new_scanner_service(scanner_config: Optional[Dict[str, Any]] = None) -> ScannerService:
+    settings = get_settings()
+    return ScannerService(
+        data_provider=_build_data_provider(),
+        feature_engine=FeatureEngine(),
+        scanner_config=scanner_config,
+        benchmark_ticker=settings.SCANNER_BENCHMARK_TICKER,
+    )
 
 
 def get_scanner_service() -> ScannerService:
     """Get or create scanner service instance"""
     global _scanner_service
     if _scanner_service is None:
-        data_provider = MockMarketDataProvider()
-        feature_engine = FeatureEngine()
-        _scanner_service = ScannerService(
-            data_provider=data_provider,
-            feature_engine=feature_engine
-        )
+        _scanner_service = _new_scanner_service()
     return _scanner_service
+
+
+@router.get("/scanner/provider", response_model=ScannerProviderResponse)
+async def get_scanner_provider():
+    """Report whether scans are using OpenBB or the direct fallback."""
+    return get_scanner_service().get_provider_status()
 
 
 @router.get("/scanner/scan", response_model=List[StockScoreResponse])
@@ -93,10 +160,11 @@ async def run_scan(
         if tickers:
             ticker_list = [t.strip().upper() for t in tickers.split(",")]
 
-        results = scanner_service.run_scan(
+        results = await asyncio.to_thread(
+            scanner_service.run_scan,
             tickers=ticker_list,
             top_n=top_n,
-            use_cached_features=use_cached_features
+            use_cached_features=use_cached_features,
         )
 
         if not results:
@@ -104,6 +172,8 @@ async def run_scan(
 
         return results
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Scan failed: {str(e)}")
 
@@ -195,14 +265,8 @@ async def update_scanner_config(config: ScannerConfigRequest):
 
     config_dict = config.model_dump()
 
-    # Recreate scanner service with new config
-    data_provider = MockMarketDataProvider()
-    feature_engine = FeatureEngine()
-    _scanner_service = ScannerService(
-        data_provider=data_provider,
-        feature_engine=feature_engine,
-        scanner_config=config_dict
-    )
+    # Recreate the scanner while preserving the configured real-data provider.
+    _scanner_service = _new_scanner_service(scanner_config=config_dict)
 
     return {"status": "success", "message": "Scanner configuration updated"}
 

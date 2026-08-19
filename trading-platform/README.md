@@ -14,13 +14,14 @@ A full-stack quantitative stock trading research platform with AI assistance. Th
 │   (Port 3000)   │     │   (Port 8000)   │     │   + TimescaleDB │
 └─────────────────┘     └─────────────────┘     └─────────────────┘
                               │
-                              ▼
-                        ┌─────────────────┐
-                        │   Redis         │
-                        │   (Port 6379)   │
-                        └─────────────────┘
-                              │
-                              ▼
+                    ┌─────────┴─────────┐
+                    ▼                   ▼
+             ┌─────────────┐     ┌─────────────────┐
+             │ OpenBB REST │     │   Redis         │
+             │ (Port 6900) │     │   (Port 6379)   │
+             └─────────────┘     └─────────────────┘
+                                      │
+                                      ▼
                         ┌─────────────────┐
                         │   Celery Worker │
                         └─────────────────┘
@@ -33,6 +34,7 @@ A full-stack quantitative stock trading research platform with AI assistance. Th
 - **Database:** PostgreSQL 16 with TimescaleDB extension
 - **Cache/Queue:** Redis 7
 - **Data Processing:** Polars, NumPy, Pandas
+- **Market Data Gateway:** OpenBB with direct yfinance fallback
 - **ML:** Scikit-Learn, LightGBM, XGBoost
 - **Backtesting:** VectorBT
 - **Task Queue:** Celery
@@ -71,6 +73,7 @@ A full-stack quantitative stock trading research platform with AI assistance. Th
    - API: http://localhost:8000
    - API Docs: http://localhost:8000/docs
    - Frontend: http://localhost:3000
+   - OpenBB API: http://localhost:6900/docs
    - PostgreSQL: localhost:5432
    - Redis: localhost:6379
 
@@ -151,6 +154,13 @@ trading-platform/
 - `PUT /api/v1/assets/{ticker}` - Update asset
 - `DELETE /api/v1/assets/{ticker}` - Delete asset
 - `GET /api/v1/assets/{ticker}/prices` - Get historical prices
+
+### Scanner
+- `GET /api/v1/scanner/provider` - Show the configured and currently active data source
+- `GET /api/v1/scanner/scan` - Download market history, calculate features, and rank opportunities
+- OpenBB's Yahoo Finance connector is preferred; direct `yfinance` is used automatically if the OpenBB service is unavailable
+- Both paths use split-and-dividend-adjusted OHLC so fallback does not change scanner price semantics
+- The default 15-symbol starter universe is configurable with `SCANNER_DEFAULT_TICKERS`
 
 ### Portfolio
 - `GET /api/v1/portfolio` - List portfolios

@@ -41,6 +41,17 @@ export interface StockScore {
   timestamp: string
 }
 
+export interface ScannerProviderStatus {
+  configured_provider: string
+  active_source: string
+  fallback_source: string | null
+  openbb_data_provider: string | null
+  openbb_url: string | null
+  last_error: string | null
+  default_universe_size: number
+  live_market_data: boolean
+}
+
 export interface RegimeResponse {
   date: string
   regime: string
